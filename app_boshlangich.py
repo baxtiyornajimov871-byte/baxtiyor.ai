@@ -379,6 +379,36 @@ CHAT_HTML = r"""<!DOCTYPE html>
 <meta name="google-site-verification" content="quvbrODXfwsubyDVXs2BoOywLJYIIMRdRR8wuZAxoXY" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Baxtiyor AI</title>
+<meta name="description" content="Baxtiyor AI — Uzbek intelligent AI assistant created by Baxtiyor Najimov. Chat online with Baxtiyor AI.">
+
+<meta name="keywords" content="baxtiyor ai, baxtiyor najimov ai, uzbek ai assistant, ai uzbekistan">
+
+<meta name="author" content="Baxtiyor Najimov">
+<meta name="author" content="Baxtiyor Najimov">
+
+<link rel="canonical" href="https://baxtiyor-ai.onrender.com/">
+
+<meta property="og:title" content="Baxtiyor AI">
+<meta property="og:title" content="Baxtiyor AI">
+<meta property="og:description" content="Uzbek intelligent AI assistant by Baxtiyor Najimov">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://baxtiyor-ai.onrender.com/">
+
+<link rel="icon" href="https://i.ibb.co/7Ny4FHZq/logo.png">
+
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "SoftwareApplication",
+ "name": "Baxtiyor AI",
+ "operatingSystem": "Web",
+ "applicationCategory": "AI Assistant",
+ "creator": {
+   "@type": "Person",
+   "name": "Baxtiyor Najimov"
+ }
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
 <style>
