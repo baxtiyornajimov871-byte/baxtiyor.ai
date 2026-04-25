@@ -1,2 +1,6 @@
 flask
 gunicorn
+groq
+requests
+pypdf
+python-docx
