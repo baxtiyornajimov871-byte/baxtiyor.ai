@@ -131,7 +131,17 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB max upload
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
+@app.route("/sitemap.xml")
+def sitemap():
+    from flask import Response
+    return Response("""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+   <url>
+      <loc>https://baxtiyor-ai.onrender.com/</loc>
+      <changefreq>daily</changefreq>
+      <priority>1.0</priority>
+   </url>
+</urlset>""", mimetype="application/xml")
 
 # ════════════════════════════════════════════════════════════════════════════
 # DATABASE HELPERS
