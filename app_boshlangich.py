@@ -13,6 +13,7 @@ import uuid
 import json
 import traceback
 from datetime import datetime
+from database import init_db, create_chat, get_chats, get_messages, save_message
 from flask import (
     Flask, request, jsonify, render_template_string,
     send_from_directory
@@ -127,6 +128,7 @@ CREATOR_ANSWER = (
 # ════════════════════════════════════════════════════════════════════════════
 
 app = Flask(__name__)
+init_db()
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB max upload
 
@@ -1221,7 +1223,9 @@ def chat():
     """
     user_id = request.form.get("user_id", "anonymous")
     message = request.form.get("message", "").strip()
-
+db_history = get_db_history(user_id, limit=10)
+messages_history = db_history + [{"role": "user", "content": message}]
+reply, provider = get_ai_response(user_content, messages_history)
     # ── Handle file upload ─────────────────────────────────────────────────
     file_name  = None
     file_type  = None
