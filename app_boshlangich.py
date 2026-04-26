@@ -1,27 +1,17 @@
 """
 Baxtiyor AI - Flask Web Application
 Created by BAXTIYOR NAJIMOV
-
-NOTE FOR FUTURE PRODUCTION:
-- Migrate SQLite → PostgreSQL (e.g. Render PostgreSQL add-on)
-- Migrate local uploads/ → cloud storage (S3, Cloudinary, Backblaze B2)
-  because Render free tier resets the filesystem on every redeploy.
 """
 
 import os
 import uuid
-import json
+import sqlite3
 import traceback
 from datetime import datetime
-from database import init_db, create_chat, get_chats, get_messages, save_message
-from flask import (
-    Flask, request, jsonify, render_template_string,
-    send_from_directory
-)
-from database import get_db_history
-from werkzeug.utils import secure_filename
-import sqlite3
+
 import requests
+from flask import Flask, request, jsonify, render_template_string, send_from_directory
+from werkzeug.utils import secure_filename
 
 # ─── Groq SDK ───────────────────────────────────────────────────────────────
 try:
@@ -54,22 +44,16 @@ except ImportError:
 
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "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")
 HF_TOKEN       = os.environ.get("HF_TOKEN", "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")
-
-# IMPORTANT: Set ADMIN_PASSWORD as a Render environment variable.
-# The fallback below is for LOCAL TESTING ONLY. Never share it publicly.
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Almn@#$%^BvCFTyHj178/*-+")
 
-# AI model constants — easy to change
 GROQ_MODEL = "llama-3.3-70b-versatile"
 HF_MODEL   = "mistralai/Mistral-7B-Instruct-v0.2"
 
-# Logo URL — change this to your actual logo image URL.
-# Falls back to emoji if image fails to load.
 LOGO_URL = "https://i.ibb.co/7Ny4FHZq/logo.png"
 
-UPLOAD_FOLDER      = "uploads"
-MAX_EXTRACTED_CHARS = 6000   # Max file text sent to AI
-DB_FILE            = "baxtiyor_ai.db"
+UPLOAD_FOLDER       = "uploads"
+MAX_EXTRACTED_CHARS = 6000
+DB_FILE             = "baxtiyor_ai.db"
 
 ALLOWED_EXTENSIONS = {
     "txt", "pdf", "docx", "py", "js", "html", "css",
@@ -80,7 +64,6 @@ IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif"}
 AUDIO_EXTENSIONS = {"mp3", "wav", "ogg", "m4a", "webm"}
 TEXT_EXTENSIONS  = {"txt", "py", "js", "html", "css", "json", "csv", "md"}
 
-# Keywords that trigger the creator rule (multi-language)
 CREATOR_KEYWORDS = [
     "who created you", "who made you", "who built you",
     "who is your creator", "who are you made by", "who developed you",
@@ -91,7 +74,6 @@ CREATOR_KEYWORDS = [
     "built you",
 ]
 
-# System prompt for all AI calls
 SYSTEM_PROMPT = """You are Baxtiyor AI, a brilliant, friendly, and helpful AI assistant.
 
 CRITICAL RULE — CREATOR IDENTITY (HIGHEST PRIORITY):
@@ -113,7 +95,6 @@ Be polite, helpful, clear, and thoughtful.
 You are expert in coding, writing, analysis, translation, mathematics, and general knowledge.
 """
 
-# The beautiful creator answer returned directly (before calling any AI)
 CREATOR_ANSWER = (
     "✨ I was crafted with care and a brilliant design,\n"
     "By **BAXTIYOR NAJIMOV** — a creator so fine.\n"
@@ -129,36 +110,23 @@ CREATOR_ANSWER = (
 # ════════════════════════════════════════════════════════════════════════════
 
 app = Flask(__name__)
-init_db()
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB max upload
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-@app.route("/sitemap.xml")
-def sitemap():
-    from flask import Response
-    return Response("""<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-   <url>
-      <loc>https://baxtiyor-ai.onrender.com/</loc>
-      <changefreq>daily</changefreq>
-      <priority>1.0</priority>
-   </url>
-</urlset>""", mimetype="application/xml")
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # DATABASE HELPERS
 # ════════════════════════════════════════════════════════════════════════════
 
 def get_db():
-    """Open a SQLite connection with row factory for dict-like access."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
-    """Create tables if they don't exist yet."""
     with get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
@@ -181,7 +149,6 @@ init_db()
 
 def save_message(user_id, user_message, bot_reply, provider,
                  file_name=None, file_type=None, file_text=None):
-    """Save one conversation turn to the database."""
     try:
         with get_db() as conn:
             conn.execute("""
@@ -193,18 +160,10 @@ def save_message(user_id, user_message, bot_reply, provider,
                   file_name, file_type, file_text))
             conn.commit()
     except Exception as e:
-        # Database errors must never crash the request
         print(f"[DB save error] {e}")
 
 
 def get_db_history(user_id, limit=10):
-    """
-    Load the last `limit` conversation turns for a user from SQLite.
-    Returns a list of OpenAI-style message dicts:
-      [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
-
-    This is the SERVER-SIDE memory — more reliable than frontend localStorage.
-    """
     try:
         with get_db() as conn:
             rows = conn.execute("""
@@ -216,7 +175,6 @@ def get_db_history(user_id, limit=10):
                 LIMIT ?
             """, (user_id, limit)).fetchall()
 
-        # Rows are newest-first → reverse to get chronological order
         history = []
         for row in reversed(rows):
             if row["user_message"]:
@@ -239,7 +197,6 @@ def allowed_file(filename):
 
 
 def extract_text(filepath, ext):
-    """Extract readable text from an uploaded file."""
     try:
         if ext == "pdf":
             if not PDF_AVAILABLE:
@@ -277,13 +234,11 @@ def extract_text(filepath, ext):
 # ════════════════════════════════════════════════════════════════════════════
 
 def is_creator_question(text: str) -> bool:
-    """Return True if the user is asking who created the AI."""
     lower = text.lower()
     return any(kw in lower for kw in CREATOR_KEYWORDS)
 
 
 def call_groq(messages_history: list) -> str:
-    """Call the Groq API with full conversation history."""
     if not GROQ_AVAILABLE:
         raise Exception("groq package not installed")
     if not GROQ_API_KEY:
@@ -300,10 +255,6 @@ def call_groq(messages_history: list) -> str:
 
 
 def call_huggingface(user_message: str) -> str:
-    """
-    Call Hugging Face Inference API as a backup.
-    Note: HF free tier has cold-start delays and rate limits.
-    """
     if not HF_TOKEN:
         raise Exception("HF_TOKEN not configured")
 
@@ -332,36 +283,21 @@ def call_huggingface(user_message: str) -> str:
 
 
 def get_ai_response(user_message: str, messages_history: list):
-    """
-    Main AI dispatcher.
-
-    Priority:
-    1. Creator rule (instant, no API call)
-    2. Groq (primary)
-    3. Hugging Face (backup)
-    4. Polite fallback message
-
-    Returns (reply_text, provider_name)
-    """
-    # ── 1. Creator rule — always wins ────────────────────────────────────────
     if is_creator_question(user_message):
         return CREATOR_ANSWER, "creator_rule"
 
-    # ── 2. Try Groq ──────────────────────────────────────────────────────────
     try:
         reply = call_groq(messages_history)
         return reply, "groq"
     except Exception as e:
         print(f"[Groq failed] {e}")
 
-    # ── 3. Try Hugging Face ──────────────────────────────────────────────────
     try:
         reply = call_huggingface(user_message)
         return reply, "huggingface"
     except Exception as e:
         print(f"[HuggingFace failed] {e}")
 
-    # ── 4. Fallback ───────────────────────────────────────────────────────────
     return (
         "😔 I'm sorry — both AI services are temporarily unavailable.\n"
         "Please try again in a moment. 🙏\n\n"
@@ -383,22 +319,14 @@ CHAT_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Baxtiyor AI</title>
 <meta name="description" content="Baxtiyor AI — Uzbek intelligent AI assistant created by Baxtiyor Najimov. Chat online with Baxtiyor AI.">
-
 <meta name="keywords" content="baxtiyor ai, baxtiyor najimov ai, uzbek ai assistant, ai uzbekistan">
-
 <meta name="author" content="Baxtiyor Najimov">
-<meta name="author" content="Baxtiyor Najimov">
-
 <link rel="canonical" href="https://baxtiyor-ai.onrender.com/">
-
-<meta property="og:title" content="Baxtiyor AI">
 <meta property="og:title" content="Baxtiyor AI">
 <meta property="og:description" content="Uzbek intelligent AI assistant by Baxtiyor Najimov">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://baxtiyor-ai.onrender.com/">
-
 <link rel="icon" href="https://i.ibb.co/7Ny4FHZq/logo.png">
-
 <script type="application/ld+json">
 {
  "@context": "https://schema.org",
@@ -416,7 +344,6 @@ CHAT_HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
   :root {
     --bg:          #0b0d13;
     --surface:     #12141c;
@@ -434,7 +361,6 @@ CHAT_HTML = r"""<!DOCTYPE html>
     --radius:      18px;
     --radius-sm:   10px;
   }
-
   html, body { height: 100%; }
   body {
     font-family: 'DM Sans', sans-serif;
@@ -445,8 +371,6 @@ CHAT_HTML = r"""<!DOCTYPE html>
     height: 100vh;
     overflow: hidden;
   }
-
-  /* ── Header ──────────────────────────────────────────────── */
   header {
     display: flex;
     align-items: center;
@@ -465,16 +389,11 @@ CHAT_HTML = r"""<!DOCTYPE html>
     box-shadow: 0 0 18px rgba(91,138,240,0.45);
     flex-shrink: 0;
   }
-  .header-logo img {
-    width: 100%; height: 100%;
-    object-fit: cover;
-    display: block;
-  }
+  .header-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .header-logo .fallback { font-size: 20px; }
   .header-title {
     font-family: 'Syne', sans-serif;
-    font-size: 1.15rem;
-    font-weight: 800;
+    font-size: 1.15rem; font-weight: 800;
     background: linear-gradient(130deg, #8ab4f8, #b490f5);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -489,80 +408,44 @@ CHAT_HTML = r"""<!DOCTYPE html>
     box-shadow: 0 0 8px rgba(74,222,128,0.6);
     animation: pulse 2.5s infinite;
   }
-  @keyframes pulse {
-    0%,100% { opacity: 1; }
-    50% { opacity: 0.5; }
-  }
-
-  /* ── Chat area ────────────────────────────────────────────── */
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
   #chat-container {
-    flex: 1;
-    overflow-y: auto;
+    flex: 1; overflow-y: auto;
     padding: 28px 16px 12px;
     scroll-behavior: smooth;
   }
   #chat-container::-webkit-scrollbar { width: 4px; }
   #chat-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
   .msg-row {
-    display: flex;
-    margin-bottom: 22px;
+    display: flex; margin-bottom: 22px;
     animation: fadeUp 0.28s ease both;
   }
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
   .msg-row.user { justify-content: flex-end; }
   .msg-row.bot  { justify-content: flex-start; }
-
   .avatar {
     width: 30px; height: 30px;
     border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 14px;
-    flex-shrink: 0;
-    margin-top: 4px;
+    font-size: 14px; flex-shrink: 0; margin-top: 4px;
   }
   .avatar.bot-av  { background: var(--user-grad); margin-right: 10px; box-shadow: 0 0 10px rgba(91,138,240,0.3); }
   .avatar.user-av { background: var(--surface2); border: 1px solid var(--border); margin-left: 10px; }
-
   .bubble {
     max-width: min(600px, 80vw);
     padding: 12px 16px;
     border-radius: var(--radius);
-    line-height: 1.68;
-    font-size: 0.9rem;
-    word-break: break-word;
+    line-height: 1.68; font-size: 0.9rem; word-break: break-word;
   }
-  .bubble.user {
-    background: var(--user-grad);
-    border-bottom-right-radius: 4px;
-    color: #fff;
-  }
-  .bubble.bot {
-    background: var(--bot-bg);
-    border: 1px solid var(--border);
-    border-bottom-left-radius: 4px;
-  }
+  .bubble.user { background: var(--user-grad); border-bottom-right-radius: 4px; color: #fff; }
+  .bubble.bot  { background: var(--bot-bg); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
   .bubble pre {
-    background: #0c0e15;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 12px;
-    overflow-x: auto;
-    font-size: 0.8rem;
-    margin: 8px 0;
-    line-height: 1.5;
+    background: #0c0e15; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px;
+    overflow-x: auto; font-size: 0.8rem; margin: 8px 0; line-height: 1.5;
   }
   .bubble code { font-family: 'Fira Code', 'Cascadia Code', monospace; }
-  .provider-tag {
-    font-size: 0.62rem;
-    color: var(--text-muted);
-    margin-top: 4px;
-    margin-left: 2px;
-  }
-
+  .provider-tag { font-size: 0.62rem; color: var(--text-muted); margin-top: 4px; margin-left: 2px; }
   .file-chip {
     display: inline-flex; align-items: center; gap: 6px;
     background: rgba(255,255,255,0.1);
@@ -570,28 +453,12 @@ CHAT_HTML = r"""<!DOCTYPE html>
     border-radius: 8px; padding: 4px 10px;
     font-size: 0.76rem; margin-bottom: 6px;
   }
-  .file-chip.bot-chip {
-    background: rgba(91,138,240,0.1);
-    border-color: rgba(91,138,240,0.22);
-    color: #8ab4f8;
-  }
-
-  /* loading dots */
+  .file-chip.bot-chip { background: rgba(91,138,240,0.1); border-color: rgba(91,138,240,0.22); color: #8ab4f8; }
   .loading-bubble { display: flex; gap: 5px; padding: 14px 16px; }
-  .dot {
-    width: 7px; height: 7px;
-    background: var(--accent);
-    border-radius: 50%;
-    animation: bounce 1.1s infinite;
-  }
+  .dot { width: 7px; height: 7px; background: var(--accent); border-radius: 50%; animation: bounce 1.1s infinite; }
   .dot:nth-child(2) { animation-delay: 0.18s; }
   .dot:nth-child(3) { animation-delay: 0.36s; }
-  @keyframes bounce {
-    0%,80%,100% { transform: scale(0.65); opacity: 0.4; }
-    40%          { transform: scale(1);    opacity: 1; }
-  }
-
-  /* empty state */
+  @keyframes bounce { 0%,80%,100% { transform: scale(0.65); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
   .empty-state {
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
@@ -599,53 +466,31 @@ CHAT_HTML = r"""<!DOCTYPE html>
     color: var(--text-muted); text-align: center; padding: 24px;
   }
   .empty-logo {
-    width: 68px; height: 68px;
-    border-radius: 20px;
+    width: 68px; height: 68px; border-radius: 20px;
     background: var(--user-grad);
     display: flex; align-items: center; justify-content: center;
-    font-size: 34px;
-    box-shadow: 0 0 36px rgba(91,138,240,0.3);
-    margin-bottom: 6px;
-    overflow: hidden;
+    font-size: 34px; box-shadow: 0 0 36px rgba(91,138,240,0.3);
+    margin-bottom: 6px; overflow: hidden;
   }
   .empty-logo img { width: 100%; height: 100%; object-fit: cover; }
-  .empty-state h2 {
-    font-family: 'Syne', sans-serif;
-    font-size: 1.4rem; font-weight: 800;
-    color: var(--text);
-  }
+  .empty-state h2 { font-family: 'Syne', sans-serif; font-size: 1.4rem; font-weight: 800; color: var(--text); }
   .empty-state p { font-size: 0.87rem; max-width: 300px; line-height: 1.6; }
-  .suggestions {
-    display: flex; flex-wrap: wrap; gap: 8px;
-    justify-content: center; margin-top: 18px;
-  }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px; }
   .suggestion-btn {
-    background: var(--surface2);
-    border: 1px solid var(--border);
+    background: var(--surface2); border: 1px solid var(--border);
     color: var(--text); padding: 8px 14px;
     border-radius: 20px; font-size: 0.79rem;
     cursor: pointer; transition: all 0.2s; font-family: inherit;
   }
   .suggestion-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(91,138,240,0.07); }
-
-  /* ── Input bar ────────────────────────────────────────────── */
-  #input-area {
-    padding: 10px 16px 18px;
-    background: var(--bg);
-    flex-shrink: 0;
-  }
+  #input-area { padding: 10px 16px 18px; background: var(--bg); flex-shrink: 0; }
   .input-wrapper {
     max-width: 800px; margin: 0 auto;
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--surface); border: 1px solid var(--border);
     border-radius: 16px; overflow: hidden;
     transition: border-color 0.2s, box-shadow 0.2s;
   }
-  .input-wrapper:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(91,138,240,0.1);
-  }
-
+  .input-wrapper:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,138,240,0.1); }
   #file-preview {
     display: none; padding: 8px 14px;
     border-bottom: 1px solid var(--border);
@@ -660,7 +505,6 @@ CHAT_HTML = r"""<!DOCTYPE html>
     border-radius: 4px; transition: color 0.15s;
   }
   #remove-file:hover { color: var(--danger); }
-
   .input-row { display: flex; align-items: flex-end; gap: 4px; padding: 8px 10px; }
   #message-input {
     flex: 1; background: transparent; border: none; outline: none;
@@ -669,7 +513,6 @@ CHAT_HTML = r"""<!DOCTYPE html>
     line-height: 1.5; padding: 4px 6px;
   }
   #message-input::placeholder { color: var(--text-muted); }
-
   .icon-btn {
     width: 36px; height: 36px;
     background: none; border: none; cursor: pointer;
@@ -689,12 +532,7 @@ CHAT_HTML = r"""<!DOCTYPE html>
   #send-btn:hover { transform: scale(1.07); box-shadow: 0 4px 16px rgba(91,138,240,0.5); }
   #send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   #file-input { display: none; }
-
-  .hint-text {
-    text-align: center; font-size: 0.68rem;
-    color: var(--text-muted); margin-top: 8px; opacity: 0.65;
-  }
-
+  .hint-text { text-align: center; font-size: 0.68rem; color: var(--text-muted); margin-top: 8px; opacity: 0.65; }
   @media (max-width: 600px) {
     header { padding: 10px 14px; }
     #chat-container { padding: 16px 8px 8px; }
@@ -743,17 +581,13 @@ CHAT_HTML = r"""<!DOCTYPE html>
       <button id="remove-file" title="Remove file">✕</button>
     </div>
     <div class="input-row">
-      <!-- File upload button -->
       <label for="file-input" class="icon-btn" title="Attach file">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
         </svg>
       </label>
       <input type="file" id="file-input" accept=".txt,.pdf,.docx,.py,.js,.html,.css,.json,.csv,.md,.png,.jpg,.jpeg,.webp,.gif,.mp3,.wav,.ogg,.m4a,.webm"/>
-
       <textarea id="message-input" placeholder="Message Baxtiyor AI..." rows="1"></textarea>
-
-      <!-- Microphone button -->
       <button class="icon-btn" id="mic-btn" title="Voice input">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
@@ -762,8 +596,6 @@ CHAT_HTML = r"""<!DOCTYPE html>
           <line x1="8" y1="23" x2="16" y2="23"/>
         </svg>
       </button>
-
-      <!-- Send button -->
       <button id="send-btn" title="Send">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="22" y1="2" x2="11" y2="13"/>
@@ -776,44 +608,36 @@ CHAT_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-// ── User identity (anonymous, stored in localStorage) ─────────────────────
 let userId = localStorage.getItem('baxtiyor_uid');
 if (!userId) {
   userId = 'u_' + Math.random().toString(36).slice(2,10) + Date.now().toString(36);
   localStorage.setItem('baxtiyor_uid', userId);
 }
 
-// Optional display name
-let userName = localStorage.getItem('baxtiyor_name') || '';
-
-// ── Element references ────────────────────────────────────────────────────
-const chatContainer  = document.getElementById('chat-container');
-const messageInput   = document.getElementById('message-input');
-const sendBtn        = document.getElementById('send-btn');
-const fileInput      = document.getElementById('file-input');
-const filePreview    = document.getElementById('file-preview');
+const chatContainer   = document.getElementById('chat-container');
+const messageInput    = document.getElementById('message-input');
+const sendBtn         = document.getElementById('send-btn');
+const fileInput       = document.getElementById('file-input');
+const filePreview     = document.getElementById('file-preview');
 const filePreviewName = document.getElementById('file-preview-name');
-const removeFileBtn  = document.getElementById('remove-file');
-const emptyState     = document.getElementById('empty-state');
-const micBtn         = document.getElementById('mic-btn');
+const removeFileBtn   = document.getElementById('remove-file');
+const emptyState      = document.getElementById('empty-state');
+const micBtn          = document.getElementById('mic-btn');
 
 let currentFile = null;
 let isLoading   = false;
 let recognition = null;
 let isRecording = false;
 
-// ── Auto-resize textarea ──────────────────────────────────────────────────
 messageInput.addEventListener('input', () => {
   messageInput.style.height = 'auto';
   messageInput.style.height = Math.min(messageInput.scrollHeight, 140) + 'px';
 });
 
-// ── Enter sends, Shift+Enter = new line ────────────────────────────────────
 messageInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
-// ── File handling ─────────────────────────────────────────────────────────
 fileInput.addEventListener('change', () => {
   const f = fileInput.files[0];
   if (f) {
@@ -823,13 +647,13 @@ fileInput.addEventListener('change', () => {
   }
 });
 removeFileBtn.addEventListener('click', clearFile);
+
 function clearFile() {
   currentFile = null;
   fileInput.value = '';
   filePreview.classList.remove('active');
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
           .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
@@ -837,15 +661,10 @@ function escapeHtml(s) {
 
 function formatMessage(text) {
   text = escapeHtml(text);
-  // Bold: **text**
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  // Italic: *text*
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  // Inline code
   text = text.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  // Code blocks
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-  // Line breaks
   text = text.replace(/\n/g, '<br>');
   return text;
 }
@@ -854,7 +673,6 @@ function scrollBottom() { chatContainer.scrollTop = chatContainer.scrollHeight; 
 function removeEmptyState() { if (emptyState) emptyState.remove(); }
 function suggest(text) { messageInput.value = text; messageInput.focus(); sendMessage(); }
 
-// ── Add a message bubble ──────────────────────────────────────────────────
 function addMessage(role, content, fileName, provider) {
   const isBot = role === 'bot';
   const row = document.createElement('div');
@@ -866,7 +684,6 @@ function addMessage(role, content, fileName, provider) {
 
   const col = document.createElement('div');
 
-  // Show file chip above user bubble
   if (fileName && !isBot) {
     const chip = document.createElement('div');
     chip.className = 'file-chip';
@@ -879,7 +696,6 @@ function addMessage(role, content, fileName, provider) {
   bubble.innerHTML = formatMessage(content);
   col.appendChild(bubble);
 
-  // Show file chip below bot bubble
   if (isBot && fileName) {
     const chip = document.createElement('div');
     chip.className = 'file-chip bot-chip';
@@ -901,7 +717,6 @@ function addMessage(role, content, fileName, provider) {
   scrollBottom();
 }
 
-// ── Loading indicator ─────────────────────────────────────────────────────
 function addLoading() {
   const row = document.createElement('div');
   row.id = 'loading-row';
@@ -915,12 +730,12 @@ function addLoading() {
   chatContainer.appendChild(row);
   scrollBottom();
 }
+
 function removeLoading() {
   const el = document.getElementById('loading-row');
   if (el) el.remove();
 }
 
-// ── Send message ──────────────────────────────────────────────────────────
 async function sendMessage() {
   const text = messageInput.value.trim();
   if ((!text && !currentFile) || isLoading) return;
@@ -938,11 +753,9 @@ async function sendMessage() {
   formData.append('message', text);
   if (currentFile) formData.append('file', currentFile);
 
-  // Clear inputs immediately
   messageInput.value = '';
   messageInput.style.height = 'auto';
   clearFile();
-
   addLoading();
 
   try {
@@ -963,11 +776,10 @@ async function sendMessage() {
 
 sendBtn.addEventListener('click', sendMessage);
 
-// ── Speech recognition ────────────────────────────────────────────────────
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 if (SR) {
   recognition = new SR();
-  recognition.continuous    = false;
+  recognition.continuous     = false;
   recognition.interimResults = true;
   recognition.onresult = e => {
     const t = Array.from(e.results).map(r => r[0].transcript).join('');
@@ -975,7 +787,7 @@ if (SR) {
     messageInput.style.height = 'auto';
     messageInput.style.height = Math.min(messageInput.scrollHeight, 140) + 'px';
   };
-  recognition.onend  = () => { isRecording = false; micBtn.classList.remove('recording'); };
+  recognition.onend   = () => { isRecording = false; micBtn.classList.remove('recording'); };
   recognition.onerror = () => { isRecording = false; micBtn.classList.remove('recording'); };
   micBtn.addEventListener('click', () => {
     if (isRecording) { recognition.stop(); return; }
@@ -993,6 +805,7 @@ if (SR) {
 </html>
 """
 
+
 # ════════════════════════════════════════════════════════════════════════════
 # HTML — ADMIN PANEL
 # ════════════════════════════════════════════════════════════════════════════
@@ -1005,85 +818,34 @@ ADMIN_HTML = """<!DOCTYPE html>
 <title>Baxtiyor AI — Admin</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: system-ui, sans-serif;
-    background: #0b0d13;
-    color: #e8eaf2;
-    padding: 24px;
-    min-height: 100vh;
-  }
+  body { font-family: system-ui, sans-serif; background: #0b0d13; color: #e8eaf2; padding: 24px; min-height: 100vh; }
   h1 { font-size: 1.45rem; font-weight: 700; color: #8ab4f8; margin-bottom: 4px; }
   .sub { font-size: 0.78rem; color: #5c6278; margin-bottom: 20px; }
-
-  /* Stats bar */
   .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px; }
-  .stat {
-    background: #12141c; border: 1px solid #22253a;
-    border-radius: 10px; padding: 12px 16px;
-    font-size: 0.78rem; color: #9ca3af; min-width: 90px;
-  }
+  .stat { background: #12141c; border: 1px solid #22253a; border-radius: 10px; padding: 12px 16px; font-size: 0.78rem; color: #9ca3af; min-width: 90px; }
   .stat span { font-size: 1.5rem; font-weight: 700; color: #5b8af0; display: block; margin-bottom: 2px; }
-
-  /* Filter bar */
-  .filter-bar {
-    display: flex; gap: 10px; flex-wrap: wrap;
-    margin-bottom: 18px;
-    align-items: center;
-  }
-  .filter-bar input, .filter-bar select {
-    background: #12141c; border: 1px solid #22253a;
-    color: #e8eaf2; padding: 7px 12px; border-radius: 8px;
-    font-size: 0.8rem; font-family: inherit; outline: none;
-  }
+  .filter-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; align-items: center; }
+  .filter-bar input, .filter-bar select { background: #12141c; border: 1px solid #22253a; color: #e8eaf2; padding: 7px 12px; border-radius: 8px; font-size: 0.8rem; font-family: inherit; outline: none; }
   .filter-bar input:focus, .filter-bar select:focus { border-color: #5b8af0; }
   .filter-bar input { flex: 1; min-width: 160px; }
-  .filter-label { font-size: 0.75rem; color: #5c6278; }
-
-  /* Table */
   .wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
-  th {
-    text-align: left; padding: 10px 12px;
-    background: #12141c; border-bottom: 2px solid #22253a;
-    color: #9ca3af; font-weight: 600;
-    position: sticky; top: 0; z-index: 1;
-  }
-  td {
-    padding: 10px 12px; border-bottom: 1px solid #191c27;
-    vertical-align: top; max-width: 260px; word-break: break-word;
-  }
+  th { text-align: left; padding: 10px 12px; background: #12141c; border-bottom: 2px solid #22253a; color: #9ca3af; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+  td { padding: 10px 12px; border-bottom: 1px solid #191c27; vertical-align: top; max-width: 260px; word-break: break-word; }
   tr:hover td { background: #12141c; }
-
-  .badge {
-    display: inline-block; padding: 2px 8px;
-    border-radius: 10px; font-size: 0.68rem; font-weight: 600;
-  }
-  .badge.groq         { background: rgba(74,222,128,0.12); color: #4ade80; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.68rem; font-weight: 600; }
+  .badge.groq         { background: rgba(74,222,128,0.12);  color: #4ade80; }
   .badge.huggingface  { background: rgba(251,191,36,0.12);  color: #fbbf24; }
   .badge.creator_rule { background: rgba(167,139,250,0.12); color: #a78bf0; }
   .badge.fallback     { background: rgba(248,113,113,0.12); color: #f87171; }
   .badge.system       { background: rgba(148,163,184,0.12); color: #94a3b8; }
-
   .file-link { color: #5b8af0; text-decoration: none; }
   .file-link:hover { text-decoration: underline; }
-
   .thumb-wrap { margin-top: 4px; }
-  .thumb-wrap img {
-    width: 60px; height: 60px; object-fit: cover;
-    border-radius: 6px; border: 1px solid #22253a;
-  }
-
+  .thumb-wrap img { width: 60px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #22253a; }
   audio { width: 120px; margin-top: 4px; }
-
-  .extracted-text {
-    max-height: 70px; overflow-y: auto;
-    font-size: 0.7rem; color: #9ca3af;
-    background: #0b0d13; padding: 6px;
-    border-radius: 6px; white-space: pre-wrap;
-    margin-top: 4px;
-  }
+  .extracted-text { max-height: 70px; overflow-y: auto; font-size: 0.7rem; color: #9ca3af; background: #0b0d13; padding: 6px; border-radius: 6px; white-space: pre-wrap; margin-top: 4px; }
   .no-data { text-align: center; padding: 48px; color: #5c6278; font-size: 0.9rem; }
-
   .ts { white-space: nowrap; color: #5c6278; font-size: 0.72rem; }
   .uid { font-size: 0.68rem; color: #5c6278; }
 </style>
@@ -1091,14 +853,11 @@ ADMIN_HTML = """<!DOCTYPE html>
 <body>
 <h1>🛡 Baxtiyor AI — Admin Panel</h1>
 <p class="sub">Total messages in DB: <strong>{{ total }}</strong> &nbsp;|&nbsp; Showing latest {{ messages|length }}</p>
-
 <div class="stats">
   {% for p, c in providers.items() %}
   <div class="stat"><span>{{ c }}</span>{{ p }}</div>
   {% endfor %}
 </div>
-
-<!-- Filter controls (client-side) -->
 <div class="filter-bar">
   <input type="text" id="filter-text" placeholder="🔍 Search messages or user ID…" oninput="applyFilter()"/>
   <select id="filter-provider" onchange="applyFilter()">
@@ -1110,58 +869,37 @@ ADMIN_HTML = """<!DOCTYPE html>
     <option value="system">system</option>
   </select>
 </div>
-
 <div class="wrap">
 <table id="msgs-table">
   <thead>
     <tr>
-      <th>#</th>
-      <th>Time</th>
-      <th>User ID</th>
-      <th>Question</th>
-      <th>Reply</th>
-      <th>Provider</th>
-      <th>File</th>
-      <th>Extracted</th>
+      <th>#</th><th>Time</th><th>User ID</th><th>Question</th>
+      <th>Reply</th><th>Provider</th><th>File</th><th>Extracted</th>
     </tr>
   </thead>
   <tbody id="msgs-body">
   {% if messages %}
     {% for m in messages %}
-    <tr
-      data-uid="{{ m['user_id'] or '' }}"
-      data-q="{{ m['user_message'] or '' }}"
-      data-a="{{ m['bot_reply'] or '' }}"
-      data-provider="{{ m['provider'] or '' }}"
-    >
+    <tr data-uid="{{ m['user_id'] or '' }}" data-q="{{ m['user_message'] or '' }}"
+        data-a="{{ m['bot_reply'] or '' }}" data-provider="{{ m['provider'] or '' }}">
       <td>{{ m['id'] }}</td>
       <td class="ts">{{ m['timestamp'] }}</td>
       <td class="uid">{{ (m['user_id'] or '')[:14] }}…</td>
       <td>{{ m['user_message'] }}</td>
       <td>{{ (m['bot_reply'] or '')[:200] }}{% if m['bot_reply'] and m['bot_reply']|length > 200 %}…{% endif %}</td>
-      <td>
-        {% if m['provider'] %}
-        <span class="badge {{ m['provider'] }}">{{ m['provider'] }}</span>
-        {% endif %}
-      </td>
+      <td>{% if m['provider'] %}<span class="badge {{ m['provider'] }}">{{ m['provider'] }}</span>{% endif %}</td>
       <td>
         {% if m['file_name'] %}
           <a class="file-link" href="/uploads/{{ m['file_name'] }}" target="_blank">📎 {{ m['file_name'][:22] }}</a>
           <span style="display:block;font-size:0.68rem;color:#5c6278">{{ m['file_type'] }}</span>
           {% if m['file_type'] in ['png','jpg','jpeg','webp','gif'] %}
-          <div class="thumb-wrap">
-            <img src="/uploads/{{ m['file_name'] }}" alt="thumb" loading="lazy">
-          </div>
+          <div class="thumb-wrap"><img src="/uploads/{{ m['file_name'] }}" alt="thumb" loading="lazy"></div>
           {% elif m['file_type'] in ['mp3','wav','ogg','m4a','webm'] %}
           <audio controls preload="none" src="/uploads/{{ m['file_name'] }}"></audio>
           {% endif %}
         {% endif %}
       </td>
-      <td>
-        {% if m['file_text'] %}
-        <div class="extracted-text">{{ m['file_text'][:300] }}</div>
-        {% endif %}
-      </td>
+      <td>{% if m['file_text'] %}<div class="extracted-text">{{ m['file_text'][:300] }}</div>{% endif %}</td>
     </tr>
     {% endfor %}
   {% else %}
@@ -1170,16 +908,14 @@ ADMIN_HTML = """<!DOCTYPE html>
   </tbody>
 </table>
 </div>
-
 <script>
-// Client-side filter: hides rows that don't match the search/provider filter
 function applyFilter() {
   const q  = document.getElementById('filter-text').value.toLowerCase();
   const pv = document.getElementById('filter-provider').value.toLowerCase();
   document.querySelectorAll('#msgs-body tr[data-uid]').forEach(row => {
     const uid      = (row.dataset.uid || '').toLowerCase();
-    const question = (row.dataset.q  || '').toLowerCase();
-    const answer   = (row.dataset.a  || '').toLowerCase();
+    const question = (row.dataset.q   || '').toLowerCase();
+    const answer   = (row.dataset.a   || '').toLowerCase();
     const provider = (row.dataset.provider || '').toLowerCase();
     const textOk     = !q  || uid.includes(q) || question.includes(q) || answer.includes(q);
     const providerOk = !pv || provider === pv;
@@ -1196,35 +932,33 @@ function applyFilter() {
 # ROUTES
 # ════════════════════════════════════════════════════════════════════════════
 
+@app.route("/sitemap.xml")
+def sitemap():
+    from flask import Response
+    return Response("""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+   <url>
+      <loc>https://baxtiyor-ai.onrender.com/</loc>
+      <changefreq>daily</changefreq>
+      <priority>1.0</priority>
+   </url>
+</urlset>""", mimetype="application/xml")
+
+
 @app.route("/")
 def index():
-    """Main chat page."""
     return render_template_string(CHAT_HTML, logo_url=LOGO_URL)
 
 
 @app.route("/health")
 def health():
-    """Quick health check — useful for monitoring and Render uptime checks."""
     return jsonify({"status": "ok", "app": "Baxtiyor AI"})
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    """
-    Main AI endpoint.
-
-    Flow:
-    1. Parse incoming form data (message + optional file)
-    2. Extract text from file if provided
-    3. Load conversation history from SQLITE (server-side memory)
-    4. Append new user message to history
-    5. Call AI (Groq → HuggingFace → fallback)
-    6. Save result to DB
-    7. Return JSON response
-    """
     user_id = request.form.get("user_id", "anonymous")
     message = request.form.get("message", "").strip()
-
 
     # ── Handle file upload ─────────────────────────────────────────────────
     file_name  = None
@@ -1252,32 +986,15 @@ def chat():
     if not message:
         message = "I uploaded a file. Please analyze it."
 
-    # ── Build user content (message + file text if readable) ──────────────
-       # ── Build user content (message + file text if readable) ──────────────
+    # ── Build user content ────────────────────────────────────────────────
     user_content = message
-
     if file_text and not file_text.startswith("["):
         user_content = f"{message}\n\n[Attached file content]:\n{file_text}"
 
+    # ── Load server-side history from SQLite ──────────────────────────────
     db_history = get_db_history(user_id, limit=10)
 
-    messages_history = db_history + [
-        {"role": "user", "content": user_content}
-    ]
-
-    reply, provider = get_ai_response(user_content, messages_history)
-
-    save_message(user_id, message, reply, provider, file_name, file_type, file_text)
-
-return jsonify({
-    "reply": reply,
-    "provider": provider,
-    "file_name": saved_name,
-})
-    # ── Load server-side history from SQLite ──────────────────────────────
-    # This is the main memory — more reliable than frontend localStorage.
-  
-    # Append current user message to history for this call
+    # ── Append current message ────────────────────────────────────────────
     messages_history = db_history + [
         {"role": "user", "content": user_content}
     ]
@@ -1297,18 +1014,12 @@ return jsonify({
 
 @app.route("/uploads/<filename>")
 def serve_upload(filename):
-    """Serve uploaded files (images, audio, docs) for admin preview."""
-    # secure_filename already applied at upload time, but be safe
     safe = secure_filename(filename)
     return send_from_directory(app.config["UPLOAD_FOLDER"], safe)
 
 
 @app.route("/admin")
 def admin():
-    """
-    Admin panel — protected by password query param.
-    Usage: /admin?password=YOUR_PASSWORD
-    """
     pwd = request.args.get("password", "")
     if pwd != ADMIN_PASSWORD:
         return "❌ Access denied. Use /admin?password=YOUR_PASSWORD", 403
@@ -1320,7 +1031,6 @@ def admin():
         ).fetchall()
         rows  = [dict(r) for r in rows]
 
-        # Provider usage counts
         p_counts = {}
         for r in conn.execute(
             "SELECT provider, COUNT(*) AS c FROM messages GROUP BY provider ORDER BY c DESC"
@@ -1341,5 +1051,4 @@ def admin():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # debug=False in production (Render uses gunicorn, not this directly)
     app.run(host="0.0.0.0", port=port, debug=False)
