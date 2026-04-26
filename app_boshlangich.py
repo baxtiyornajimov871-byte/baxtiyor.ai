@@ -18,6 +18,7 @@ from flask import (
     Flask, request, jsonify, render_template_string,
     send_from_directory
 )
+from database import get_db_history
 from werkzeug.utils import secure_filename
 import sqlite3
 import requests
@@ -1223,9 +1224,8 @@ def chat():
     """
     user_id = request.form.get("user_id", "anonymous")
     message = request.form.get("message", "").strip()
-db_history = get_db_history(user_id, limit=10)
-messages_history = db_history + [{"role": "user", "content": message}]
-reply, provider = get_ai_response(user_content, messages_history)
+
+
     # ── Handle file upload ─────────────────────────────────────────────────
     file_name  = None
     file_type  = None
@@ -1257,11 +1257,23 @@ reply, provider = get_ai_response(user_content, messages_history)
     if file_text and not file_text.startswith("["):
         # Only add extracted text if it's real text (not a bracket note)
         user_content = f"{message}\n\n[Attached file content]:\n{file_text}"
+  db_history = get_db_history(user_id, limit=10)
 
+messages_history = db_history + [
+    {"role": "user", "content": user_content}
+]
+
+reply, provider = get_ai_response(user_content, messages_history)
+save_message(user_id, message, reply, provider, file_name, file_type, file_text)
+
+return jsonify({
+    "reply": reply,
+    "provider": provider,
+    "file_name": saved_name,
+})
     # ── Load server-side history from SQLite ──────────────────────────────
     # This is the main memory — more reliable than frontend localStorage.
-    db_history = get_db_history(user_id, limit=10)
-
+  
     # Append current user message to history for this call
     messages_history = db_history + [{"role": "user", "content": user_content}]
 
