@@ -1253,18 +1253,21 @@ def chat():
         message = "I uploaded a file. Please analyze it."
 
     # ── Build user content (message + file text if readable) ──────────────
+       # ── Build user content (message + file text if readable) ──────────────
     user_content = message
+
     if file_text and not file_text.startswith("["):
-        # Only add extracted text if it's real text (not a bracket note)
         user_content = f"{message}\n\n[Attached file content]:\n{file_text}"
-  db_history = get_db_history(user_id, limit=10)
 
-messages_history = db_history + [
-    {"role": "user", "content": user_content}
-]
+    db_history = get_db_history(user_id, limit=10)
 
-reply, provider = get_ai_response(user_content, messages_history)
-save_message(user_id, message, reply, provider, file_name, file_type, file_text)
+    messages_history = db_history + [
+        {"role": "user", "content": user_content}
+    ]
+
+    reply, provider = get_ai_response(user_content, messages_history)
+
+    save_message(user_id, message, reply, provider, file_name, file_type, file_text)
 
 return jsonify({
     "reply": reply,
