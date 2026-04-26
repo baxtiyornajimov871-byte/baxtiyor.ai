@@ -1278,7 +1278,9 @@ return jsonify({
     # This is the main memory — more reliable than frontend localStorage.
   
     # Append current user message to history for this call
-    messages_history = db_history + [{"role": "user", "content": user_content}]
+    messages_history = db_history + [
+        {"role": "user", "content": user_content}
+    ]
 
     # ── Get AI response ───────────────────────────────────────────────────
     reply, provider = get_ai_response(user_content, messages_history)
