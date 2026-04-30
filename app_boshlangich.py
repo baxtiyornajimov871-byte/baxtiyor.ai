@@ -50,7 +50,7 @@ except ImportError:
 # CONFIGURATION
 # ════════════════════════════════════════════════════════════════════════════
 
-GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "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")
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "GROQ_TOKEN")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 # IMPORTANT: Set ADMIN_PASSWORD as a Render environment variable.
